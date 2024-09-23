@@ -1,0 +1,324 @@
+---
+title: "Stock Portfolio Analysis/Optimization"
+author: "Cayden Shim"
+date: "2024-08-27"
+output: html_document
+---
+
+## Introduction
+
+In the fast-paced world of technology stocks, the allure of high growth often comes with the trade-off of heightened volatility, making risk management a complex yet crucial task. While reducing risk in such a dynamic sector may seem daunting, our recent analysis shows that with the right strategies, it's possible to strike a balance between capturing substantial returns and managing potential downturns.
+
+## Overview
+
+This investigation explored the performance and risk management of a portfolio heavily weighted in technology stocks, using various optimization strategies like mean-variance optimization and Expected Shortfall minimization. By analyzing the portfolio's returns from 2020 to 2024, we assessed the effectiveness of these strategies in balancing risk and return amidst the inherent volatility of high-growth tech stocks. Despite the challenges posed by this sector's unpredictability, the portfolio managed to achieve notable returns in several years, demonstrating the potential of well-structured risk management techniques. The results highlight both the complexities and opportunities in navigating a tech-focused investment strategy.
+
+### Data Summary
+
+The data for this investigation was pulled at a daily periodicity from Yahoo Finance using the quantmod package in R, covering the period from January 2020 to the present. The portfolio consists of major technology stocks, including Apple, Amazon, Meta, Microsoft, and Alphabet. Daily returns were calculated based on adjusted closing prices, providing a detailed and granular view of the portfolio's performance across various market conditions. This data set served as the foundation for analyzing the effectiveness of different portfolio optimization strategies, with a focus on managing risk in the volatile tech sector.
+
+### Constraints and Consistency Measures
+
+- Risk Free Rate: 0.0382.
+- 99% Confidence Level.
+- Portfolio must be fully invested.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(quantmod)
+library(tidyverse)
+library(dplyr)
+library(tinytex)
+library(PortfolioAnalytics)
+library(ROI)
+library(ROI.plugin.glpk)
+library(ROI.plugin.quadprog)
+library(ROI.plugin.symphony)
+```
+
+
+## Data Setup 
+```{r}
+stocks <-  c("META","AAPL","MSFT","GOOG", "AMZN")
+weights <-  c(0.4, 0.15, 0.1, 0.1, 0.25)
+```
+
+
+### Using a for loop to pull and bind the closing prices of each stock using quantmod function "getSymbols". 
+```{r echo = TRUE}
+portfolioclose <-  NULL
+for(stock in stocks) {
+  portfolioclose <- cbind(portfolioclose,
+                         getSymbols(stock, src = "yahoo", periodicity = 'daily', from = '2020-01-01', auto.assign = FALSE)[,4])
+}
+sp500price <- getSymbols("SPY", src = "yahoo", periodicity = 'daily', from = '2020-01-01', auto.assign = FALSE)[,4]
+
+head(portfolioclose)
+head(sp500price)
+```
+
+
+### Utilize ROC (Rate of Change Function) to calculate returns of each individual stock as well as our benchmark. 
+```{r echo = TRUE}
+portfolioclose <- portfolioclose 
+  
+
+portfolioreturns <- na.omit(ROC(portfolioclose))
+sp500returns <- na.omit(ROC(sp500price))
+
+plot_dataframe <- data.frame(portfolioclose) %>% 
+  rownames_to_column("Date") %>% 
+  mutate(Date = as.Date(Date)) %>% 
+  pivot_longer(
+    cols = ends_with(".Close"),
+    names_to = "Stock",
+    values_to = "Closing Price"
+    )
+ 
+
+head(portfolioreturns)
+head(sp500returns)
+ggplot(plot_dataframe, aes(x = Date, color = Stock)) +
+  geom_line(aes(y = `Closing Price`)) +
+  labs(
+    title = "Closing Price of Constituent Stocks",
+    x = "Date",
+    y = "Closing Price ($)"
+  ) +
+  
+  theme_minimal()
+```
+
+
+## Benchmark Strategy Performance
+
+### Use Return.portfolio function to aggregate overall return of the portfolio after taking into account the weight of each stock. 
+```{r echo = TRUE}
+pf_Return <- Return.portfolio(portfolioreturns, weights = weights)
+head(pf_Return)
+```
+
+
+### Calculating Beta and Jensen's Alpha of our returns. 
+```{r warning=FALSE, echo = TRUE}
+rf <- 0.0382
+rf_period = rf/252 
+p <- 0.95
+
+Beta_Bench <- CAPM.beta(pf_Return, sp500returns, rf_period)
+SimulatedReturn1 <- CAPM.jensenAlpha(pf_Return, sp500returns, rf_period)
+Sharpe1 <- SharpeRatio(pf_Return, Rf = rf, p = p)
+cat("Sharpe Ratio:", Sharpe1[1])
+cat("Beta:", Beta_Bench)
+cat("Jensen's Alpha:", SimulatedReturn1)
+```
+
+The analysis reveals a Sharpe Ratio of -1.896, indicating that the portfolio has generated returns that are lower than the risk-free rate when adjusted for volatility, reflecting poor risk-adjusted performance. The portfolio's Beta of 1.18 suggests it is more volatile than the market, implying a higher level of risk compared to the benchmark. However, the positive Jensen's Alpha of 0.0019 indicates that the portfolio slightly outperformed the expected return based on its Beta, suggesting some level of excess return. Overall, despite the portfolio's higher risk and underwhelming Sharpe Ratio, it managed to achieve a marginally positive excess return over the market expectation.
+
+### Calendarize Returns for clarity.
+```{r echo = TRUE}
+Calendarized1 <- table.CalendarReturns(pf_Return)
+Calendarized1
+```
+
+The portfolio returns from 2020 to 2024 exhibit significant volatility, with a notable peak in 2020 at 7.7% followed by a substantial decline in 2021, resulting in a -7.2% return. Although the portfolio partially recovered in 2023 with a 4.0% return, it again faced a sharp downturn in 2024, showing a -4.8% return by mid-year. The erratic performance across these years highlights the portfolio's sensitivity to market fluctuations, suggesting a need for a more stable investment strategy.
+
+### Plot Portfolio Returns and Benchmark for Visualization
+```{r echo = TRUE}
+overall1 = cbind(pf_Return, sp500returns)
+charts.PerformanceSummary(overall1, main = "P/L of Benchmark Strategy", legend = NULL) 
+```
+
+
+## Simple Mean Variance Strategy
+
+### Find Optimal Weights for Portfolio
+```{r echo = TRUE}
+portf  <- portfolio.spec(assets = colnames(portfolioreturns))
+
+portf <- add.constraint(portf, type ="full_investment")
+portf <- add.constraint(portf, type ="box", min = 0.10, max = 0.3)
+portf <- add.objective(portf, type = "return", name = "mean")
+portf <- add.objective(portf, type = "risk", name = "StdDev")
+
+optimum1 <-  optimize.portfolio(
+  portfolioreturns,
+  portf,
+  optimize_method = "ROI",
+  trace = TRUE
+  )
+optimum1
+
+
+chart.Weights(optimum1, main = "Change in Weights After MVO Optimization")
+```
+
+This mean-variance optimization strategy adjusts the weights of the portfolio's constituent stocks to maximize returns while minimizing risk. It enforces full investment of capital, with each stock's allocation constrained between 10% and 30% to ensure diversification. The goal is to achieve the best possible balance between return and risk, optimizing the portfolio's performance.
+
+### Backtest New Weights to Measure Optimized Performance
+```{r echo = TRUE}
+weights2 = c(0.1, 0.5, 0.2, 0.1, 0.1)
+
+rf <- 0.0382
+rf_period = rf/252 
+p <- 0.95
+
+pf_Return2 <- Return.portfolio(portfolioreturns, weights = weights2)
+Beta_MVO <- CAPM.beta(pf_Return2, sp500returns, rf_period)
+SimulatedReturn2 <- CAPM.jensenAlpha(pf_Return2, sp500returns, rf_period)
+Sharpe2 <- SharpeRatio(pf_Return2, Rf = rf, p = p)
+cat("Sharpe Ratio:", Sharpe2[1])
+cat("Beta:", Beta_MVO)
+cat("Jensen's Alpha:", SimulatedReturn2)
+
+```
+
+The mean-variance optimization resulted in a Sharpe Ratio of -2.023, indicating that the portfolio's returns, when adjusted for risk, are below the risk-free rate, reflecting poor risk-adjusted performance. The portfolio's Beta of 1.17 suggests that it is more volatile than the market, indicating a higher level of systematic risk. However, the positive Jensen's Alpha of 0.0558 shows that the portfolio managed to generate a return that exceeds the expected return based on its Beta, indicating some successful excess performance. Despite the negative Sharpe Ratio, the portfolio still achieved a modest outperformance relative to its risk, as indicated by the positive Jensen's Alpha.
+
+### MVO Weights Performance Calenderized
+```{r echo = TRUE}
+Calendarized2 <- table.CalendarReturns(pf_Return2)
+Calendarized2
+```
+
+The calendarized results of the mean-variance optimization (MVO) strategy show that the portfolio experienced significant volatility, with strong positive returns in 2020 (6.9%) and 2023 (5.1%), but negative returns in 2021 (-4.9%), 2022 (-3.0%), and 2024 year-to-date (-4.6%). The portfolio's performance appears to fluctuate considerably year-over-year, indicating that while the MVO strategy occasionally produced positive returns, it struggled to consistently deliver stable results, especially during down markets. This suggests that the strategy might be sensitive to market conditions and may require further adjustment to achieve more consistent performance.
+
+### Plot Returns of Initial Strategy, Optimized Strategy, and Benchmark S&P 500
+```{r echo = TRUE}
+overall2 <- cbind(pf_Return2, pf_Return, sp500returns)
+charts.PerformanceSummary(overall2, main = "P/L of Benchmark, Mean-Variance, and S&P500", legend = "bottomright")
+```
+
+## Minimum Variance Strategy
+
+```{r echo = TRUE}
+portf2  <- portfolio.spec(assets = colnames(portfolioreturns))
+
+portf2 <- add.constraint(portf2, type ="full_investment")
+portf2 <- add.constraint(portf2, type ="box", min = 0.10, max = 0.3)
+portf2 <- add.objective(portf2, type = "risk_budget", name = "ES")
+
+optimum2 <-  optimize.portfolio(
+  portfolioreturns,
+  portf2,
+  optimize_method = "ROI",
+  trace = TRUE
+  )
+optimum2
+
+
+chart.Weights(optimum2, main = "Change in Weights After ES Optimization")
+```
+
+This strategy is designed to minimize portfolio risk by focusing on risk budgeting through Expected Shortfall (ES), which measures potential losses in extreme market conditions. The full_investment constraint ensures that all capital is allocated across the assets, while the box constraint limits each asset's weight to between 10% and 30%, promoting diversification. By setting Expected Shortfall as the objective, the strategy aims to allocate weights in a way that minimizes potential severe losses, rather than just focusing on overall variance, providing a more robust risk management approach.
+
+
+### Backtest New Weights to Measure Optimized Performance
+```{r echo = TRUE}
+weights3 = c(0.1, 0.2739, 0.3, 0.1818, 0.1443)
+
+rf <- 0.0382
+rf_period = rf/252 
+p <- 0.95
+
+pf_Return3 <- Return.portfolio(portfolioreturns, weights = weights3)
+Beta_ES <- CAPM.beta(pf_Return3, sp500returns, rf_period)
+SimulatedReturn3 <- CAPM.jensenAlpha(pf_Return3, sp500returns, rf_period)
+Sharpe3 <- SharpeRatio(pf_Return3, Rf = rf, p = p)
+cat("Sharpe Ratio:", Sharpe3[1])
+cat("Beta:", Beta_ES)
+cat("Jensen's Alpha:", SimulatedReturn3)
+```
+
+The results of the strategy focusing on minimizing Expected Shortfall (ES) indicate a Sharpe Ratio of -2.061, which suggests that the portfolio's risk-adjusted returns are still below the risk-free rate, reflecting suboptimal performance relative to risk. The Beta of 1.16 shows that the portfolio is slightly less volatile than in previous strategies but still more volatile than the market, indicating exposure to higher systematic risk. The positive Jensen's Alpha of 0.0413 suggests that, despite the negative Sharpe Ratio, the portfolio achieved a modest excess return over what would be expected based on its Beta, indicating some degree of effective risk management. Overall, while the strategy has slightly improved risk management, it still struggles with achieving positive risk-adjusted returns.
+
+### ES Weights Performance Calenderized
+```{r echo = TRUE}
+Calendarized3 <- table.CalendarReturns(pf_Return3)
+Calendarized3
+```
+
+
+The calendarized results of the strategy focused on minimizing Expected Shortfall (ES) show that the portfolio experienced positive returns in 2020 (6.2%) and 2023 (4.5%), but faced negative returns in 2021 (-5.1%), 2022 (-3.2%), and 2024 year-to-date (-5.5%). While the strategy managed to reduce some volatility and achieve moderate gains in certain years, it struggled to protect against losses during downturns, particularly in 2024. This suggests that while the strategy may mitigate extreme losses, it still encounters challenges in consistently delivering positive performance across varying market conditions.
+
+```{r echo = TRUE}
+overall3 <- cbind(pf_Return3, pf_Return2, pf_Return, sp500returns)
+charts.PerformanceSummary(overall3, main = "P/L of Benchmark, Mean-Variance, and S&P500", legend = "bottomright")
+```
+
+## Dynamic Rebalancing Mean-Variance Strategy
+```{r}
+portf3  <- portfolio.spec(assets = colnames(portfolioreturns))
+
+
+portf3 <- add.constraint(portf3, type = "full_investment")
+portf3 <- add.constraint(portf3, type = "box", min = 0.10, max = 0.3)
+portf3 <- add.objective(portf3, type = "return", name = "mean")
+portf3 <- add.objective(portf3, type = "risk", name = "StdDev")
+
+
+optimum3 <- optimize.portfolio.rebalancing(
+  R = portfolioreturns,
+  portfolio = portf3,
+  optimize_method = "ROI",
+  search_size = 20000,
+  trace = TRUE,
+  rebalance_on = "months",
+  training_period = 1, 
+  rolling_window = 10
+)
+optimum3
+
+chart.Weights(optimum3, main = "Weights After Dynamic Rebalancing")
+```
+
+This strategy implements a dynamic portfolio optimization with monthly rebalancing to maximize returns while minimizing risk, subject to full investment and asset weight constraints (between 10% and 30%). By using a rolling 10-month window for optimization, the strategy adapts to changing market conditions while maintaining diversification through the "box" constraint. The use of both return and risk objectives ensures a balance between growth potential and volatility control. The visualization of asset weights over time helps assess the strategy's consistency in maintaining optimal allocations.
+
+## Dynamic Rebalancing Backtest
+```{r}
+weights4 <- extractWeights(optimum3)
+
+rf <- 0.0382
+rf_period = rf/252 
+p <- 0.95
+
+pf_Return4 <- Return.portfolio(portfolioreturns, weights = weights4)
+Beta_Dyn <- CAPM.beta(pf_Return4, sp500returns, rf_period)
+Alpha_Dyn <- CAPM.jensenAlpha(pf_Return4, sp500returns, rf_period)
+Sharpe_Dyn <- SharpeRatio(pf_Return4, Rf = rf, p = p)
+
+
+cat("Sharpe Ratio:", Sharpe2[1])
+cat("Beta:", Beta_MVO)
+cat("Jensen's Alpha:", SimulatedReturn2)
+```
+
+The portfolio shows a negative Sharpe Ratio (-2.03), indicating that it underperformed relative to the risk-free rate when adjusted for risk, suggesting poor risk-adjusted returns. With a beta of 1.17, the portfolio is more volatile than the market, meaning it tends to move more than the market during fluctuations. However, Jensen's Alpha of 0.0528 suggests the portfolio generated some excess returns over the market, indicating potential skill in selecting securities.
+
+## Dynamic Rebalancing Performance Calendarized
+```{r}
+Calendarized4 <- table.CalendarReturns(pf_Return4)
+Calendarized4
+```
+
+The portfolio experienced significant variability in returns across different years. Notably, 2020 showed strong performance with an 8.3% return, while 2021 saw a sharp decline of -6.2%. After a moderate loss in 2022 (-2.0%), the portfolio rebounded in 2023 with a positive 5.3% return, only to drop again in 2024 with a -4.9% return by mid-year. The portfolio’s returns seem highly volatile, alternating between gains and losses, reflecting fluctuating market conditions.
+
+```{r}
+overall3 <- cbind(pf_Return4, pf_Return3, pf_Return2, pf_Return, sp500returns)
+charts.PerformanceSummary(overall3, main = "P/L of Benchmark, MVO, ES, Dynamic Rebalancing and S&P500", legend = "bottomright")
+```
+
+## Conclusion
+
+Technology stocks, being high-growth assets, are inherently more volatile, which makes it challenging to significantly reduce Value at Risk (VaR) through traditional risk management strategies. Despite this natural volatility, the portfolio optimization strategies implemented still managed to achieve periods of positive returns, particularly in years like 2020 and 2023. The strategies, although unable to completely shield the portfolio from downturns, demonstrated an ability to manage some risk while capturing growth potential. This highlights the complexity of balancing risk and return in a portfolio dominated by high-growth technology stocks but also underscores the potential for achieving favorable results even in such a volatile sector.
+
+
+
+### Next Steps
+
+- **Explore Alternative Risk Measures:** Consider incorporating additional risk measures like Conditional Value at Risk (CVaR) or downside risk in the optimization process to further manage extreme losses, especially given the high volatility of technology stocks.
+
+- **Diversification Across Sectors:** Introduce a more diversified set of assets, including less volatile sectors, to balance the high growth and volatility of technology stocks, potentially improving the overall risk-return profile of the portfolio.
+
+
+
