@@ -39,8 +39,6 @@ install.packages(c("quantmod", "tidyverse", "PerformanceAnalytics", "ggplot2", "
 
 ## File Structure
 - PortfolioAnalysis.Rmd: Main analysis file
-- data/: (Optional) Folder for any manually downloaded datasets
-- plots/: (Optional) Folder for saved figures
 
 ## Customization
 - Modify the list of portfolio tickers in the code chunk "portfolio_symbols"
